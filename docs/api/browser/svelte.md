@@ -35,31 +35,32 @@ The package exposes two entry points: `vitest-browser-svelte` and `vitest-browse
 ## render
 
 ```ts
-export function render<C extends Component>(
+export function render<C extends Component, W extends Component>(
   Component: ComponentImport<C>,
   options?: ComponentOptions<C>,
-  renderOptions?: SetupOptions
-): Promise<RenderResult<C>>
+  renderOptions?: SetupOptions<W>,
+): Promise<RenderResult<C, W>>
 ```
 
 The `render` function records a `svelte.render` trace mark, visible in the [Trace View](/guide/browser/trace-view).
 
 ### Options
 
-The `render` function supports either options that you can pass down to [`mount`](https://svelte.dev/docs/svelte/imperative-component-api#mount) or props directly:
+`render` takes two option objects. `options` (the second argument) configures the component itself — its [props](#props) and [`mount`](https://svelte.dev/docs/svelte/imperative-component-api#mount) options like [`target`](#target). `renderOptions` (the third argument) configures the surrounding document and queries — [`baseElement`](#baseelement), [`wrapper`, and `wrapperProps`](#wrapper-and-wrapperprops).
+
+#### props
+
+Component props. The `options` argument supports either options that you can pass down to [`mount`](https://svelte.dev/docs/svelte/imperative-component-api#mount) or props directly:
 
 ```ts
 const screen = await render(Component, {
-  props: { // [!code --]
+  props: {
+    // [!code --]
     initialCount: 1, // [!code --]
   }, // [!code --]
   initialCount: 1, // [!code ++]
 })
 ```
-
-#### props
-
-Component props.
 
 #### target
 
@@ -79,9 +80,25 @@ const screen = await render(TableBody, {
 
 #### baseElement
 
-This can be passed down in a third argument. You should rarely, if ever, need to use this option.
+The element that queries are scoped to and that [`debug`](#debug) prints. Defaults to [`target`](#target) if set, otherwise `document.body`. You should rarely, if ever, need to set `baseElement`.
 
-If the `target` is specified, then this defaults to that, otherwise this defaults to `document.body`. This is used as the base element for the queries as well as what is printed when you use `debug()`.
+#### wrapper and wrapperProps
+
+Pass `wrapper` and `wrapperProps` to the `renderOptions` object to render your component as the child of another, e.g. a [context](https://svelte.dev/docs/svelte/context) provider it depends on.
+
+```ts
+const screen = await render(
+  Component,
+  { initialCount: 1 }, // props for `Component`
+  { wrapper: Provider, wrapperProps: { theme: 'dark' } }, // renderOptions
+)
+```
+
+See [Wrappers](#wrappers) for a complete example.
+
+::: tip
+If you can't test a component in isolation without a wrapper, this may be a sign that you're testing at the wrong level, or that your component structure should be rethought. Consider whether you can make your components more testable in isolation before reaching for a wrapper.
+:::
 
 ### Render Result
 
@@ -113,6 +130,10 @@ const { component } = await render(Counter, {
 // Access component exports if needed
 ```
 
+#### wrapper
+
+The mounted [`wrapper`](#wrapper-and-wrapperprops) component instance, if one was provided. Otherwise `undefined`. Exposes the wrapper's exports, like [`component`](#component) does.
+
 #### locator
 
 The [locator](/api/browser/locators) of your `container`. It is useful to use queries scoped only to your component, or pass it down to other assertions:
@@ -131,9 +152,7 @@ await expect.element(locator).toHaveTextContent('Hello World')
 #### debug
 
 ```ts
-function debug(
-  el?: HTMLElement | HTMLElement[] | Locator | Locator[],
-): void
+function debug(el?: HTMLElement | HTMLElement[] | Locator | Locator[]): void
 ```
 
 This method is a shortcut for `console.log(prettyDOM(baseElement))`. It will print the DOM content of the container or specified elements to the console.
@@ -196,16 +215,80 @@ locators.extend({
 })
 
 const screen = await render(Component)
-await expect.element(
-  screen.getByArticleTitle('Hello World')
-).toBeVisible()
+await expect.element(screen.getByArticleTitle('Hello World')).toBeVisible()
 ```
+
+## Wrappers
+
+Sometimes a component can only render or operate as the child of another component, e.g. one that provides [context](https://svelte.dev/docs/svelte/context). Pass [`wrapper` and `wrapperProps`](#wrapper-and-wrapperprops) to wrap the component under test.
+
+::: code-group
+
+```js [child.test.js]
+import { render } from 'vitest-browser-svelte'
+import { expect, test } from 'vitest'
+
+import Subject from './child.svelte'
+import Wrapper from './wrapper.svelte'
+
+test('notifications with messages from context', async () => {
+  const messages = [
+    { id: 'abc', text: 'hello' },
+    { id: 'def', text: 'world' },
+  ]
+
+  const screen = await render(
+    Subject,
+    { label: 'Notifications' },
+    { wrapper: Wrapper, wrapperProps: { messages } },
+  )
+
+  const status = screen.getByRole('status', { name: 'Notifications' })
+
+  await expect.element(status).toHaveTextContent('hello world')
+})
+```
+
+```svelte [child.svelte]
+<script>
+  import { getContext } from 'svelte'
+
+  let { label } = $props()
+
+  const messages = getContext('messages')
+</script>
+
+<div role="status" aria-label={label}>
+  {#each messages.current as message (message.id)}
+    <p>{message.text}</p>
+  {/each}
+</div>
+```
+
+```svelte [wrapper.svelte]
+<script>
+  import { setContext } from 'svelte'
+
+  let { messages, children } = $props()
+
+  setContext('messages', {
+    get current() {
+      return messages
+    },
+  })
+</script>
+
+{@render children?.()}
+```
+
+:::
 
 ## Snippets
 
 For simple snippets, you can use a wrapper component and "dummy" children to test them. Setting `data-testid` attributes can be helpful when testing slots in this manner.
 
 ::: code-group
+
 ```ts [basic.test.js]
 import { render } from 'vitest-browser-svelte'
 import { expect, test } from 'vitest'
@@ -221,6 +304,7 @@ test('basic snippet', async () => {
   await expect.element(child).toBeInTheDocument()
 })
 ```
+
 ```svelte [basic-snippet.svelte]
 <script>
   let { children } = $props()
@@ -230,6 +314,7 @@ test('basic snippet', async () => {
   {@render children?.()}
 </h1>
 ```
+
 ```svelte [basic-snippet.test.svelte]
 <script>
   import Subject from './basic-snippet.svelte'
@@ -239,11 +324,13 @@ test('basic snippet', async () => {
   <span data-testid="child"></span>
 </Subject>
 ```
+
 :::
 
 For more complex snippets, e.g. where you want to check arguments, you can use Svelte's [`createRawSnippet`](https://svelte.dev/docs/svelte/svelte#createRawSnippet) API.
 
 ::: code-group
+
 ```js [complex-snippet.test.js]
 import { render } from 'vitest-browser-svelte'
 import { createRawSnippet } from 'svelte'
@@ -264,6 +351,7 @@ test('renders greeting in message snippet', async () => {
   await expect.element(message).toHaveTextContent('Hello, Alice!')
 })
 ```
+
 ```svelte [complex-snippet.svelte]
 <script>
   let { name, message } = $props()
@@ -275,6 +363,7 @@ test('renders greeting in message snippet', async () => {
   {@render message?.(greeting)}
 </p>
 ```
+
 :::
 
 ## See also
